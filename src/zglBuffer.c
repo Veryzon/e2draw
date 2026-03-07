@@ -14,6 +14,43 @@
  *                             <https://sigmaco.org/qwadro/>
  */
 
+/*
+    This code unit manages the buffer management subsystem in SIGMA GL/2, focusing on the lifecycle, synchronization mechanisms, 
+    and OpenGL state management of avxBuffer objects. Buffer management encompasses object construction, device instantiation, 
+    binding/synchronization through DpuBindAndSyncBuf, and destruction.
+
+    The avxBuffer object extends the platform-agnostic buffer interface with OpenGL-specific state and handles.
+
+    The DpuBindAndSyncBuf function serves as the central buffer synchronization and binding mechanism. It is invoked before every buffer 
+    operation to ensure the OpenGL handle exists and is optionally bound to a target.
+    The function uses Direct State Access (DSA) when available for better performance at.
+
+    Buffer destruction implements a safe deferred deletion pattern to prevent use-after-free errors when GPU commands are in flight.
+    The destructor enqueues the OpenGL handle for deletion rather than deleting immediately.
+    Before enqueuing deletion the destructor ensures the buffer is unmapped.
+    This prevents leaking mapped memory regions that would persist after the OpenGL handle is deleted.
+
+    Many buffer operations temporarily bind buffers to specialized OpenGL targets for specific purposes. 
+    The choice between specialized targets and the buffer's natural target is controlled by preprocessor flags.
+
+    Buffer management integrates with the command processing system through worker thread operations that handle mapping and synchronization requests.
+
+    The buffer operation subsystem provides several categories of data transfer functionality.
+    All operations follow the DSA (Direct State Access) vs legacy fallback pattern, selecting the appropriate OpenGL path based on available extensions.
+
+    DpuUpdateBuffer uploads data from CPU memory to a GPU buffer. It handles both linear and strided transfers.
+    DpuDumpBuffer downloads data from a GPU buffer to CPU memory. It uses a similar pattern to DpuUpdateBuffer but in reverse.
+    DpuCopyBuffer performs GPU-side buffer-to-buffer copies without CPU involvement.
+    DpuFillBuffer fills a buffer range with a constant 32-bit value. It attempts three strategies in order.
+
+    The system provides stream-based variants for buffer I/O operations that work with afxStream objects instead of raw memory pointers.
+    _DpuUploadBuffer reads data from an afxStream and writes it to a GPU buffer.
+    _DpuDownloadBuffer reads data from a GPU buffer and writes it to an afxStream.
+
+    _DpuRemapBuf provides direct CPU access to GPU buffer memory through mapping.
+    The mapping flags (glMapRangeAccess) are determined during buffer construction.
+*/
+
 #include "zglUtils.h"
 #include "zglCommands.h"
 #include "zglObjects.h"
@@ -1059,7 +1096,7 @@ _ZGL afxError _BufCtorCb(avxBuffer buf, void** args, afxUnit invokeNo)
         GPU writes are automatically visible to the CPU (no vkInvalidateMappedMemoryRanges() needed).
         This mimics the behavior of coherent buffer mappings in OpenGL.
 
-        What cursed use case could 'MAP_WRITE_BIT | MAP_PERSISTENT_BIT' have? Lacking both 'MAP_COHERENT_BIT' and 'MAP_FLUSH_EXPLICIT_BIT'.
+        We are open to hear about what cursed use case could have 'MAP_WRITE_BIT | MAP_PERSISTENT_BIT' lacking both 'MAP_COHERENT_BIT' and 'MAP_FLUSH_EXPLICIT_BIT'.
     */
 
     /*

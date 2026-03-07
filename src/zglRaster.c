@@ -14,6 +14,41 @@
  *                             <https://sigmaco.org/qwadro/>
  */
 
+/*
+    This code unit manages the raster (texture/image) management system in SIGMA GL/2, including the avxRaster object lifecycle, 
+    data transfer operations (update, upload, download, pack, unpack), and GPU operations (blit, resolve, clear). Rasters represent 
+    GPU-side 1D/2D/3D textures, texture arrays, cubemaps, and can optionally be backed by OpenGL renderbuffers when used exclusively for rendering.
+
+    The avxRaster object encapsulates an OpenGL texture or renderbuffer, tracking both application-side metadata and GPU-side OpenGL handles.
+    The avxRaster inherits from _avxRaster, which contains portable metadata (dimensions, format, usage flags, mip levels, array layers).
+
+    Rasters are created with ZGL_UPD_FLAG_DEVICE_INST set, deferring OpenGL object creation until first use in a DPU context. This pattern enables efficient resource sharing and multi-threaded construction.
+    Destruction enqueues the OpenGL handle for deletion via _ZglDsysEnqueueDeletion, ensuring safe cleanup even when GPU commands referencing the raster are still in flight.
+
+    The DpuBindAndSyncRas function binds a raster to a specific texture unit and ensures GPU-side data is instantiated and up-to-date.
+    The system reserves special texture units for internal operations.
+
+    All update operations accept an array of avxRasterIo structures, specifying multiple subregions to update in a single call.
+    _ZglCompressedTexSubImage uses glCompressedTexSubImage* for block-compressed formats (e.g., DXT, BC7, ASTC).
+
+    DpuCopyRaster uses glCopyImageSubData (OpenGL 4.3+) for direct GPU-side texture-to-texture copies.
+    _ZglDpuBlitRaster uses framebuffer blitting for scaled/filtered copies.
+    _ZglDpuResolveRaster uses specialized blit for multisample resolve.
+    _ZglDpuClearRaster clears specific mip levels and array layers.
+
+    The system determines the appropriate glTarget based on raster properties.
+
+    Texture buffer objects allow shaders to access buffer data through texture fetch operations, providing an alternative to uniform buffers or 
+    shader storage buffers.
+
+    If RENDERBUFFER_ENABLED is defined and raster usage is exclusively avxRasterUsage_DRAW, the system may back the raster with GL_RENDERBUFFER 
+    instead of a texture. This is detected by checking glTarget == GL_RENDERBUFFER when attaching to framebuffers.
+
+    To avoid state pollution, the system uses dedicated texture units for internal operations and unbinds textures after use if _ALWAYS_UNBIND_GL_TEX is defined.
+
+
+*/
+
 #include "zglUtils.h"
 #include "zglCommands.h"
 #include "zglObjects.h"

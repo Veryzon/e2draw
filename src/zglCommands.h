@@ -22,8 +22,8 @@
 // vkCmdBindDescriptorSets - Binds descriptor sets to a command buffer
 
 ZGL afxError _DpuBindAndSyncSamp(zglDpu* dpu, afxUnit glUnit, avxSampler samp);
-ZGL afxError _DpuSyncShd(zglDpu* dpu, avxCodebase shd, avxShaderType stage);
-ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxCodebase codb, avxPipeline pip);
+ZGL afxError _DpuSyncShd(zglDpu* dpu, avxShader shd, avxShaderType stage);
+ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxShader codb, avxPipeline pip);
 ZGL afxError _DpuSurfSync(zglDpu* dpu, _avxCanvasBin surf, glVmt const* gl); // must be used before texUpdate
 ZGL afxError DpuBindAndSyncRas(zglDpu* dpu, afxUnit glUnit, avxRaster tex, afxBool keepBound);
 ZGL afxError _ZglTexSubImage(glVmt const* gl, GLenum glTarget, avxRasterRegion const* rgn, GLenum glFmt, GLenum glType, afxAddress const src);
@@ -32,7 +32,7 @@ ZGL afxError _ZglCompressedTexSubImage(glVmt const* gl, GLenum glTarget, avxRast
 
 ZGL void DpuBindVertexInput(zglDpu* dpu, avxVertexInput vin);
 ZGL afxError DpuBindPipeline(zglDpu* dpu, avxPipeline pip, avxVertexInput vin, afxFlags dynamics);
-ZGL afxError DpuBindShadersEXT(zglDpu* dpu, avxShaderType stage, avxCodebase shd);
+ZGL afxError DpuBindShadersEXT(zglDpu* dpu, avxShaderType stage, avxShader shd);
 ZGL afxError _DpuFlushPipelineState(zglDpu* dpu);
 ZGL afxError _DpuBindAndResolveLiga(zglDpu* dpu, avxLigature legt, GLuint glHandle);
 ZGL afxError _DpuBindAndSyncCanv(zglDpu* dpu, GLenum glTarget, avxCanvas canv, afxBool keepBound);

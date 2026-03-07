@@ -40,7 +40,7 @@ AFX_OBJECT(avxPipeline)
     struct
     {
         GLuint glShaderHandle;
-    }* stagesExt;
+    }* progsExt;
 };
 
 AFX_OBJECT(avxVertexInput)
@@ -79,9 +79,9 @@ AFX_OBJECT(avxLigature)
     afxUnit tboCnt;
 };
 
-AFX_OBJECT(avxCodebase)
+AFX_OBJECT(avxShader)
 {
-    AFX_OBJECT(_avxCodebase) m;
+    AFX_OBJECT(_avxShader) m;
 
     afxUnit shdUniqueId;
     zglUpdateFlags      updFlags;
@@ -177,8 +177,8 @@ ZGL afxClassConfig const _ZglSemMgrCfg;
 
 ZGL afxError _ZglPipCtor(avxPipeline pip, void** args, afxUnit invokeNo);
 ZGL afxError _ZglPipDtor(avxPipeline pip);
-ZGL afxError _ZglShdCtor(avxCodebase shd, void** args, afxUnit invokeNo);
-ZGL afxError _ZglShdDtor(avxCodebase shd);
+ZGL afxError _ZglShdCtor(avxShader shd, void** args, afxUnit invokeNo);
+ZGL afxError _ZglShdDtor(avxShader shd);
 ZGL afxError _ZglVinCtor(avxVertexInput vin, void** args, afxUnit invokeNo);
 ZGL afxError _ZglVinDtor(avxVertexInput vin);
 ZGL afxError _ZglCanvCtor(avxCanvas canv, void** args, afxUnit invokeNo);

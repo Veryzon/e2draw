@@ -15,6 +15,30 @@
  */
 
 
+/*
+    The SIGMA GL/2 fence system implements a dual synchronization model that combines OpenGL's GLsync objects for GPU-side 
+    synchronization with Win32 event handles for efficient CPU-side blocking. This design enables both GPU command queue 
+    synchronization (via glWaitSync) and host thread blocking (via WaitForSingleObject), providing semantics similar to 
+    Vulkan's fence objects while working within OpenGL's constraints.
+
+    The avxFence object extends the base _avxFence structure with OpenGL-specific implementation.
+
+    The glHandle is stored in a union with glHandleAtom to enable atomic compare-and-swap operations during fence recycling. 
+    The Win32 event is created as a manual-reset event with initial state determined by avxFenceInfo::initialVal.
+
+    The _DpuSignalFence function implements GPU-side fence signaling.
+
+    The zglDpu::fenceSignalChain is a linked list of fences awaiting GPU completion. The worker thread in afxDrawBridge 
+    periodically calls _DpuProcessFenceSignalChain to poll these fences.
+    The function uses timeout=0 for non-blocking polling (line 37), allowing the worker thread to continue processing other work. 
+    The GL_SYNC_FLUSH_COMMANDS_BIT flag ensures pending commands are flushed to the GPU before checking status.
+
+    The fence signal chain is processed during the worker thread's main loop in afxDrawBridge. After executing submitted commands, 
+    the worker calls _DpuProcessFenceSignalChain to advance fence states and notify waiting application threads.
+
+
+*/
+
 #include "zglUtils.h"
 #include "zglCommands.h"
 #include "zglObjects.h"
