@@ -14,6 +14,53 @@
  *                             <https://sigmaco.org/qwadro/>
  */
 
+/*
+    This code unit manages the vertex input system in SIGMA GL/2, which manages vertex attribute configuration, vertex buffer bindings, 
+    and index buffer state for the graphics pipeline. The vertex input system defines how vertex data is fetched from buffers and made 
+    available to vertex shaders during draw operations.
+
+    The vertex input system consists of two main components:
+     - Vertex Input Objects (avxVertexInput) - Define the attribute layout, including attribute formats, locations, and binding slots
+     - Vertex Input State (zglVertexInputState) - Track which buffers are bound to which binding slots, along with offsets, strides, and ranges
+    The system follows the deferred state management pattern used throughout SIGMA GL/2, maintaining separate "next" (pending) and 
+    "active" (current GPU) state representations. Changes are batched and applied during _ZglFlushVertexInputState before draw calls.
+
+    The zglVertexInputState structure maintains up to 16 vertex buffer bindings (defined by ZGL_MAX_VERTEX_ATTRIB_BINDINGS), each containing:
+     - The buffer object (avxBuffer) and its OpenGL handle
+     - A unique ID for change detection
+     - Binding parameters: offset, range, and stride
+    The index buffer state is tracked separately with similar information.
+
+    The binding process is separated into three independent operations:
+     - DpuBindVertexInput - Binds the attribute layout definition
+     - DpuBindVertexBuffers - Binds vertex buffers to binding slots
+     - DpuBindIndexBuffer - Binds the index buffer
+    These commands stage changes in the "next" state. The actual OpenGL state synchronization is deferred until _ZglFlushVertexInputState is called before draw operations.
+
+    The DpuBindVertexBuffers function binds one or more vertex buffers to consecutive binding slots starting at a specified index.
+    The DpuBindIndexBuffer function binds the index buffer used for indexed draw operations.
+    The _ZglFlushVertexInputState function synchronizes pending vertex input state changes to OpenGL before draw commands are issued. 
+    This is part of the three-stage state flush pipeline described in Pipeline State Flushing.
+
+    Like other SIGMA GL/2 resources, avxVertexInput objects maintain per-DPU OpenGL VAO handles to support concurrent usage across multiple execution units.
+    
+    The avxVertexInput object is typically bound in conjunction with pipeline binding via DpuBindPipeline.
+
+    Mismatches between pipeline and vertex input configurations result in undefined behavior or validation errors if debug layers are enabled.
+
+    When vertex or index buffers are bound, the flush operation may need to synchronize buffer contents between host and device if the buffer has been modified. 
+    This synchronization is handled by DpuBindAndSyncBuf.
+
+    The avxVertexInput object is created separately from buffer bindings and defines the static vertex attribute layout. 
+    While buffer binding operations are documented on this page, the creation and configuration of avxVertexInput objects themselves 
+    is managed through the vertex input declaration API.
+
+    The separation between layout (avxVertexInput) and binding (buffer assignment) follows the Vulkan model, enabling:
+     - Reuse of the same layout with different buffer sources
+     - Efficient pipeline switching without rebinding buffers
+     - Clear separation of concerns between what data looks like vs. where it comes from
+*/
+
 #include "zglUtils.h"
 #include "zglCommands.h"
 #include "zglObjects.h"
@@ -60,7 +107,7 @@ _ZGL void _ZglUnbindVinResources(zglDpu* dpu)
 
     for (afxUnit i = 0; i < activeVin->m.binCnt; i++)
     {
-        avxVertexStream* vsi = &activeVin->m.bins[i];
+        _avxVertexBin* vsi = &activeVin->m.bins[i];
         afxUnit pin = vsi->pin;
 
         if (state->sources[pin].buf)
@@ -151,11 +198,11 @@ _ZGL void _ZglFlushVertexInputState(zglDpu* dpu)
             gl->ObjectLabel(GL_VERTEX_ARRAY, glHandle, vin->m.tag.len, (GLchar const*)vin->m.tag.start); _ZglThrowErrorOccuried();
         }
 
-        avxVertexStream const* bins = vin->m.bins;
+        _avxVertexBin const* bins = vin->m.bins;
         afxUnit streamCnt = vin->m.binCnt;
         for (afxUnit i = 0; i < streamCnt; i++)
         {
-            avxVertexStream const* stream = &bins[i];
+            _avxVertexBin const* stream = &bins[i];
             afxUnit pin = stream->pin;
             AFX_ASSERT_RANGE(ZGL_MAX_VERTEX_ATTRIB_BINDINGS, pin, 1);
             //AFX_ASSERT_RANGE(ZGL_MAX_VERTEX_ATTRIB_STRIDE, 0, stream->stride);
@@ -166,11 +213,11 @@ _ZGL void _ZglFlushVertexInputState(zglDpu* dpu)
             afxUnit totalAttrCnt = vin->m.totalAttrCnt;
             afxUnit attrCnt = stream->attrCnt;
             afxUnit baseAttrIdx = stream->baseAttrIdx;
-            avxVertexAttr const* attrs = vin->m.attrs;
+            _avxVertexAttr const* attrs = vin->m.attrs;
             for (afxUnit j = 0; j < attrCnt; j++)
             {
                 afxUnit attrIdx = baseAttrIdx + j;
-                avxVertexAttr const* attr = &attrs[attrIdx];
+                _avxVertexAttr const* attr = &attrs[attrIdx];
                 AFX_ASSERT_RANGE(avxFormat_TOTAL, attr->fmt, 1);
                 AFX_ASSERT_RANGE(ZGL_MAX_VERTEX_ATTRIBS, attr->location, 1);
                 AFX_ASSERT_RANGE(ZGL_MAX_VERTEX_ATTRIB_BINDINGS, pin, 1);
@@ -302,7 +349,7 @@ _ZGL void _ZglFlushVertexInputState(zglDpu* dpu)
 
         for (afxUnit i = 0; i < vin->m.binCnt; i++)
         {
-            avxVertexStream const* stream = &vin->m.bins[i];
+            _avxVertexBin const* stream = &vin->m.bins[i];
             afxUnit pin = stream->pin;
             AFX_ASSERT_RANGE(ZGL_MAX_VERTEX_ATTRIB_BINDINGS, pin, 1);
 

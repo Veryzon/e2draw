@@ -14,6 +14,58 @@
  *                             <https://sigmaco.org/qwadro/>
  */
 
+/*
+    This code unit manages the shader compilation, GLSL generation, program linking, and caching mechanisms within the SIGMA GL/2 system. 
+    It explains how shader source code (stored in avxShader objects) is transformed into OpenGL shader and program objects, 
+    including the dynamic GLSL generation system that adds version directives, standard defines, and platform-specific workarounds.
+
+    The shader compilation process is triggered during pipeline creation or first use, coordinated by the _DpuFlushPipelineState function 
+    when a pipeline lacking an OpenGL program handle is bound. The primary compilation entry point is _DpuCreateShaders, which processes 
+    all shader stages defined in a pipeline configuration.
+
+    The compilation process iterates through each shader stage defined in the pipeline configuration (pip->m.stages), compiling individual 
+    shaders and storing their OpenGL handles in pip->stagesExt[i].glShaderHandle. After all stages are compiled, an OpenGL program object is 
+    created, shaders are attached, the program is linked, and ligature (resource binding) resolution is performed before the shaders are 
+    detached and the program handle is cached.
+
+    The system dynamically generates GLSL source code by combining multiple components: version directives, standard defines/macros, 
+    stage-specific defines, platform workarounds, and the actual shader code. This approach allows shader source to be written in a more portable, 
+    AFX-friendly syntax that is transformed into valid GLSL at compilation time.
+
+    The GLSL version directive is constructed based on the avxShader program's specified version or system defaults.
+    The system injects standard type aliases and convenience macros to make GLSL code more compatible with AFX conventions:
+
+    The compilation process injects defines that identify the current shader stage, allowing shared shader code to conditionally compile stage-specific logic.
+
+    The system provides a workaround for OpenGL implementations lacking ARB_shader_draw_parameters extension support.
+
+    GLSL requires the shader entry point to be named main, but the system allows specification of alternative entry point names in the pipeline 
+    stage configuration (pip->m.stages[stageIdx].fn). When a non-empty entry point name is provided, a preprocessor define is injected to remap it.
+    This allows multiple entry points to be defined in a single shader source file, with the active one selected at compilation time.
+
+    Shader objects are represented by the avxShader class, which stores shader source code and metadata. The lifecycle follows the system's 
+    standard resource management pattern with deferred GPU instantiation and deletion.
+    When an avxShader is destroyed, its OpenGL shader and program handles are not immediately deleted. Instead, they are enqueued for deferred 
+    deletion using _ZglDsysEnqueueDeletion, which ensures that GPU resources are not freed while they might still be referenced by in-flight commands.
+
+    After linking, the system must resolve resource bindings (uniforms, uniform buffers, storage buffers, samplers) between the shader's declared 
+    resources and the ligature (descriptor set) schema. This is performed by _DpuBindAndResolveLiga, which queries the linked program for active 
+    uniforms and uniform blocks, mapping them to ligature binding points.
+
+    This resolution step is critical for the later resource binding process to correctly bind buffers and textures to the locations expected by the shader.
+
+    After linking completes, the individual shader objects are detached from the program using glDetachShader. This is safe because the compiled 
+    shader code is embedded in the program object. The shader handles remain stored in pip->stagesExt[i].glShaderHandle for potential reuse if 
+    the pipeline is recreated.
+
+    The system implements a multi-level caching strategy to avoid redundant shader compilation and program linking.
+    Compiled shader objects are cached in the pipeline's stagesExt array. When _DpuCreateShaders is called, it first checks if 
+    pip->stagesExt[stageIdx].glShaderHandle already exists. If so, that stage's compilation is skipped. This allows shader stages to be reused 
+    across multiple pipeline recreations or updates.
+
+
+*/
+
 #include "zglUtils.h"
 #include "zglCommands.h"
 #include "zglObjects.h"
@@ -129,7 +181,7 @@ vec4 saturate(vec4 x) {\n \
 // SHADER                                                                     //
 ////////////////////////////////////////////////////////////////////////////////
 
-_ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxCodebase codb, avxPipeline pip)
+_ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxShader codb, avxPipeline pip)
 {
     afxError err = { 0 };
     glVmt const* gl = dpu->gl;
@@ -146,17 +198,17 @@ _ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxCodebase codb, avxPipeline pip)
     afxArray code;
     AfxMakeArray(&code, sizeof(afxByte), 4096, NIL, 0);
 
-    for (afxUnit stageIdx = 0; stageIdx < pip->m.stageCnt; stageIdx++)
+    for (afxUnit stageIdx = 0; stageIdx < pip->m.progCnt; stageIdx++)
     {
-        if (pip->stagesExt[stageIdx].glShaderHandle)
+        if (pip->progsExt[stageIdx].glShaderHandle)
             continue;
 
         AfxEmptyArray(&code, TRUE, FALSE);
-        afxUnit progId = pip->m.stages[stageIdx].progId;
-        avxShaderType stage = pip->m.stages[stageIdx].stage;
+        afxUnit progId = pip->m.progs[stageIdx].progId;
+        avxShaderType stage = pip->m.progs[stageIdx].stage;
 
         _avxCodeBlock* prog;
-        if (!AvxGetProgram(codb, progId, (void**)&prog))
+        if (!AvxGetShaderCrate(codb, progId, (void**)&prog))
         {
             AfxThrowError();
             continue;
@@ -190,9 +242,9 @@ _ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxCodebase codb, avxPipeline pip)
         }
 
         // Workaround to select an shader entry-point function in GLSL.
-        if (!AfxIsStringEmpty(&pip->m.stages[stageIdx].fn.s))
+        if (!AfxIsStringEmpty(&pip->m.progs[stageIdx].fn.s))
         {
-            AfxFormatString(&tmps.s, "\n#define main %.*s \n", AfxPushString(&pip->m.stages[stageIdx].fn.s));
+            AfxFormatString(&tmps.s, "\n#define main %.*s \n", AfxPushString(&pip->m.progs[stageIdx].fn.s));
             void* room = AfxPushArrayUnits(&code, tmps.s.len, &arrel, NIL, 0);
             AfxDumpString(&tmps.s, 0, tmps.s.len, room);
         }
@@ -247,7 +299,7 @@ _ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxCodebase codb, avxPipeline pip)
         //AvxDumpShaderCode(codb, progId, &code);
         {
             _avxCodeBlock* slot;
-            if (!AvxGetProgram(codb, progId, (void**)&slot))
+            if (!AvxGetShaderCrate(codb, progId, (void**)&slot))
                 return afxError_NOT_FOUND;
 
             if (slot->codeLen)
@@ -295,7 +347,7 @@ _ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxCodebase codb, avxPipeline pip)
             }
             else
             {
-                pip->stagesExt[stageIdx].glShaderHandle = shader;
+                pip->progsExt[stageIdx].glShaderHandle = shader;
                 //glShaders[tmpShdGlHandleCnt] = shader;
                 tmpShdGlHandleCnt++;
             }
@@ -307,8 +359,8 @@ _ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxCodebase codb, avxPipeline pip)
             {
                 //gl->DeleteShader(glShaders[tmpShdGlHandleCnt]); _ZglThrowErrorOccuried();
                 //glShaders[tmpShdGlHandleCnt] = NIL;
-                gl->DeleteShader(pip->stagesExt[stageIdx].glShaderHandle); _ZglThrowErrorOccuried();
-                pip->stagesExt[stageIdx].glShaderHandle = NIL;
+                gl->DeleteShader(pip->progsExt[stageIdx].glShaderHandle); _ZglThrowErrorOccuried();
+                pip->progsExt[stageIdx].glShaderHandle = NIL;
             }
             break;
         }
@@ -322,7 +374,7 @@ _ZGL afxError _DpuCreateShaders(zglDpu* dpu, avxCodebase codb, avxPipeline pip)
 }
 
 #if 0
-_ZGL afxError _DpuSyncShd(zglDpu* dpu, avxCodebase shd, avxShaderType stage)
+_ZGL afxError _DpuSyncShd(zglDpu* dpu, avxShader shd, avxShaderType stage)
 {
     //AfxEntry("shd=%p", shd);
     afxError err = { 0 };
@@ -372,7 +424,7 @@ _ZGL afxError _DpuSyncShd(zglDpu* dpu, avxCodebase shd, avxShaderType stage)
                     shd->glProgHandle = 0;
                     shd->compiled = TRUE;
                     shd->updFlags &= ~(ZGL_UPD_FLAG_DEVICE_INST | ZGL_UPD_FLAG_DEVICE_FLUSH);
-                    AfxReportMessage("avxCodebase %p hardware-side data instanced.", shd);
+                    AfxReportMessage("avxShader %p hardware-side data instanced.", shd);
                 }
             }
         }
@@ -387,7 +439,7 @@ _ZGL afxError _DpuSyncShd(zglDpu* dpu, avxCodebase shd, avxShaderType stage)
 }
 #endif
 
-_ZGL afxError _ZglShdDtor(avxCodebase shd)
+_ZGL afxError _ZglShdDtor(avxShader shd)
 {
     afxError err = { 0 };
 
@@ -411,7 +463,7 @@ _ZGL afxError _ZglShdDtor(avxCodebase shd)
     return err;
 }
 
-_ZGL afxError _ZglShdCtor(avxCodebase shd, void** args, afxUnit invokeNo)
+_ZGL afxError _ZglShdCtor(avxShader shd, void** args, afxUnit invokeNo)
 {
     afxError err = { 0 };
     AFX_ASSERT_OBJECTS(afxFcc_SHD, 1, &shd);

@@ -14,6 +14,29 @@
  *                             <https://sigmaco.org/qwadro/>
  */
 
+/*
+    This code unit manages the sampler object system in SIGMA GL/2, which provides texture sampling configuration separate from texture objects 
+    themselves. Samplers define how textures are filtered, addressed at boundaries, and compared during shader operations.
+
+    The sampler system (avxSampler) implements OpenGL sampler objects that encapsulate texture sampling state.
+    Samplers are identified by the object class afxFcc_SAMP and maintain OpenGL sampler handles per execution unit.
+    Per-DPU Handle Management: Like other resources, samplers maintain separate OpenGL handles for each execution unit to 
+    support concurrent command recording across multiple threads.
+
+    Samplers are bound through the ligature system using a deferred binding pattern. The binding process stages changes in "next" state that are later synchronized to "active" state.
+
+    Some buggy drivers incorrectly bind samplers per-program rather than globally. To work around this, the system provides explicit unbinding.
+    This workaround ensures samplers are re-bound after pipeline changes on drivers that don't maintain sampler state correctly.
+
+    The actual OpenGL sampler binding occurs during _ZglFlushLigatureState, which is called before draw commands to synchronize pending state changes.
+
+    When a pipeline is linked, sampler uniforms in the shader program must be resolved to texture unit indices.
+
+    The _DpuBindAndSyncSamp function ensures the sampler object exists on the GPU and is ready for use.
+
+
+*/
+
 #include "zglUtils.h"
 #include "zglCommands.h"
 #include "zglObjects.h"

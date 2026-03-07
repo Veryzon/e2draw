@@ -760,7 +760,7 @@ _ZGL afxError _ZglDqueBindAndSyncLiga(afxDrawBridge dexu, afxUnit unit, avxLigat
     else
     {
         afxUnit shdCnt;
-        avxCodebase shd;
+        avxShader shd;
         shdCnt = dexu->state.shdCnt;
 
         for (afxUnit i = 0; i < shdCnt; i++)

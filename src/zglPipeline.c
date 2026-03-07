@@ -16,6 +16,40 @@
 
  // OpenGL/Vulkan Continuous Integration
 
+/*
+    This code unit manages the avxPipeline object lifecycle, structure, and management within the SIGMA GL/2 system. 
+    It covers pipeline construction and destruction, per-DPU OpenGL program handle management, update flag synchronization, 
+    and binding operations.
+
+    The avxPipeline object encapsulates a complete graphics pipeline state, including shader programs, rasterization configuration, 
+    blending, depth/stencil settings, and resource binding schemas. It acts as a reusable state object similar to Vulkan's VkPipeline 
+    or Direct3D 12's ID3D12PipelineState.
+
+    Pipeline objects maintain separate OpenGL program handles for each execution unit (DPU) and swap iteration. This design enables:
+     - Concurrent Recording: Multiple threads can record commands using the same pipeline simultaneously
+     - Triple Buffering: The _ZGL_PSO_SWAPS constant (typically 3) enables triple-buffered pipeline state
+     - Resource Isolation: Each DPU has independent GL state, preventing cross-context conflicts
+
+    Pipeline construction occurs when the application requests a new pipeline through the draw system. When a pipeline is first bound to a DPU, 
+    the system detects the missing OpenGL handle and performs lazy instantiation. After initial instantiation, binding the pipeline simply 
+    reuses the cached OpenGL program handle.
+
+    Pipeline destruction uses deferred deletion to ensure OpenGL resources aren't freed while GPU commands are in-flight.
+
+    The DpuBindPipeline function transitions a pipeline to active status and propagates its configuration to the DPU's "next" state fields.
+
+    When binding a pipeline, DpuBindPipeline copies pipeline configuration to the DPU's "next" state fields. 
+    This implements a deferred state update pattern.
+
+    The per-DPU handle array architecture supports concurrent command recording across multiple execution units.
+    A modulo operation implements circular buffering with _ZGL_PSO_SWAPS (typically 3) slots, enabling triple-buffered pipeline state per DPU.
+
+    After DpuBindPipeline sets the nextPip field, the actual OpenGL state changes occur during _DpuFlushPipelineState.
+
+    Pipeline instantiation delegates shader compilation to _DpuCreateShaders.
+    After linking the GL program, _DpuBindAndResolveLiga resolves resource bindings.
+*/
+
 #include "zglCommands.h"
 #include "zglObjects.h"
 #include "zglUtils.h"
@@ -64,7 +98,7 @@ _ZGL afxError _DpuFlushPipelineState(zglDpu* dpu)
                 //GLuint tmpShdGlHandles[8];
                 //AfxMakeArray(&code, sizeof(afxChar), 2048, NIL, 0);
 
-                avxCodebase codb = pip->m.codb;
+                avxShader codb = pip->m.codb;
                 AFX_ASSERT_OBJECTS(afxFcc_SHD, 1, &codb);
 
                 //if (_DpuCreateShaders(dpu, codb, pip->m.stageCnt, pip->m.stages, &tmpShdGlHandleCnt, tmpShdGlHandles))
@@ -93,9 +127,9 @@ _ZGL afxError _DpuFlushPipelineState(zglDpu* dpu)
                             gl->ObjectLabel(GL_PROGRAM, glHandle, pip->m.tag.len, (GLchar const*)pip->m.tag.start); _ZglThrowErrorOccuried();
                         }
 
-                        for (afxUnit i = 0; i < pip->m.stageCnt; i++)
+                        for (afxUnit i = 0; i < pip->m.progCnt; i++)
                         {
-                            gl->AttachShader(glHandle, pip->stagesExt[i].glShaderHandle); _ZglThrowErrorOccuried();
+                            gl->AttachShader(glHandle, pip->progsExt[i].glShaderHandle); _ZglThrowErrorOccuried();
                         }
 
                         gl->LinkProgram(glHandle); _ZglThrowErrorOccuried();
@@ -118,9 +152,9 @@ _ZGL afxError _DpuFlushPipelineState(zglDpu* dpu)
                         if (_DpuBindAndResolveLiga(dpu, pip->m.liga, glHandle))
                             AfxThrowError();
 
-                        for (afxUnit i = pip->m.stageCnt; i-- > 0;)
+                        for (afxUnit i = pip->m.progCnt; i-- > 0;)
                         {
-                            gl->DetachShader(glHandle, pip->stagesExt[i].glShaderHandle); _ZglThrowErrorOccuried();
+                            gl->DetachShader(glHandle, pip->progsExt[i].glShaderHandle); _ZglThrowErrorOccuried();
                         }
 
                         if (err)
@@ -130,7 +164,7 @@ _ZGL afxError _DpuFlushPipelineState(zglDpu* dpu)
                         }
                     }
 
-                    for (afxUnit i = pip->m.stageCnt; i-- > 0;)
+                    for (afxUnit i = pip->m.progCnt; i-- > 0;)
                     {
                         //gl->DeleteShader(pip->m.stages[i].glShaderHandle); _ZglThrowErrorOccuried();
                         //pip->m.stages[i].glShaderHandle = NIL;
@@ -162,7 +196,7 @@ _ZGL afxError _DpuFlushPipelineState(zglDpu* dpu)
     _ZglFlushRsChanges(dpu);
 }
 
-_ZGL afxError DpuBindShadersEXT(zglDpu* dpu, avxShaderType stage, avxCodebase shd)
+_ZGL afxError DpuBindShadersEXT(zglDpu* dpu, avxShaderType stage, avxShader shd)
 {
     afxError err = { 0 };
     glVmt const* gl = dpu->gl;
@@ -420,9 +454,9 @@ _ZGL afxError _ZglPipDtor(avxPipeline pip)
     afxObjectStash const stashes[] =
     {
         {
-            .cnt = pip->m.stageCnt,
-            .siz = sizeof(pip->stagesExt[0]),
-            .var = (void*)&pip->stagesExt
+            .cnt = pip->m.progCnt,
+            .siz = sizeof(pip->progsExt[0]),
+            .var = (void*)&pip->progsExt
         }
     };
 
@@ -453,9 +487,9 @@ _ZGL afxError _ZglPipCtor(avxPipeline pip, void** args, afxUnit invokeNo)
     afxObjectStash const stashes[] =
     {
         {
-            .cnt = pip->m.stageCnt,
-            .siz = sizeof(pip->stagesExt[0]),
-            .var = (void*)&pip->stagesExt
+            .cnt = pip->m.progCnt,
+            .siz = sizeof(pip->progsExt[0]),
+            .var = (void*)&pip->progsExt
         }
     };
 
@@ -466,8 +500,8 @@ _ZGL afxError _ZglPipCtor(avxPipeline pip, void** args, afxUnit invokeNo)
         return err;
     }
 
-    for (afxUnit i = 0; i < pip->m.stageCnt; i++)
-        pip->stagesExt[i].glShaderHandle = NIL;
+    for (afxUnit i = 0; i < pip->m.progCnt; i++)
+        pip->progsExt[i].glShaderHandle = NIL;
 
     AfxZero(pip->perDpu, sizeof(pip->perDpu));
     pip->updFlags = ZGL_UPD_FLAG_DEVICE_INST;
